@@ -1,6 +1,7 @@
 import csv
 import os
 import json
+import re
 
 def process_command(command):
     cmd_parts = command.split(maxsplit=2)
@@ -72,7 +73,9 @@ def select_command(cmd_parts):
         columns_part, rest = command_str.split(' from ')
         columns = [col.strip() for col in columns_part.split(',')]
         filename, where_clause = rest.split(' where ')
-        condition = parse_where_clause(where_clause)
+        # and_operator = ' AND ' in where_clause
+        # conditions = parse_where_clause(where_clause)
+        conditions, logical_operator = parse_where_clause(where_clause)
     except ValueError:
         return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
 
@@ -92,51 +95,61 @@ def select_command(cmd_parts):
     else:
         chunk_line_count = 1  # Default value if meta file doesn't exist
     print("Chunk line count:", chunk_line_count)
-    process_file_in_chunks(filename, columns, chunk_line_count, condition)
+    process_file_in_chunks(filename, columns, chunk_line_count, conditions, logical_operator)
 
     return f"Select query executed on {filename}."
 
-def process_file_in_chunks(filename, columns, chunk_line_count, condition):
+
+def process_file_in_chunks(filename, columns, chunk_line_count, conditions, logical_operator):
     with open(filename, 'r', newline='') as file:
         reader = csv.DictReader(file)
-        header = reader.fieldnames
-        selected_columns = [col for col in columns if col in header]
-        print(','.join(selected_columns))  # Print the column headers once
+        selected_columns = [col for col in columns if col in reader.fieldnames]
+        print(','.join(selected_columns))  # Print column headers
 
-        chunk_count = 0
-        chunk = []
+        chunk_count, chunk = 0, []
         for row in reader:
-            chunk.append({col: row[col] for col in selected_columns})
+            chunk.append(row)
 
-            if len(chunk) >= chunk_line_count:
-                # Apply condition to the chunk and process it
-                filtered_chunk = [r for r in chunk if not condition or check_condition(r, condition)]
-                process_chunk(filtered_chunk, chunk_count, selected_columns)
-                chunk = []  # Reset the chunk
-                chunk_count += 1
+        if len(chunk) >= chunk_line_count:
+            filtered_chunk = [r for r in chunk if not conditions or check_condition(r, conditions, logical_operator)]
+            process_chunk(filtered_chunk, chunk_count, selected_columns)
+            chunk, chunk_count = [], chunk_count + 1
 
-        # Process the last chunk if it's not empty
-        if chunk:
-            filtered_chunk = [r for r in chunk if not condition or check_condition(r, condition)]
+        if chunk:  # Process last chunk
+            and_operator = ' AND ' in conditions
+            filtered_chunk = [r for r in chunk if not conditions or check_condition(r, conditions, and_operator)]
             process_chunk(filtered_chunk, chunk_count, selected_columns)
 
 def process_chunk(chunk, chunk_count, selected_columns):
-    print(f"Chunk {chunk_count}:")
+    # print(f"Chunk {chunk_count}:")
     for row in chunk:
         print(','.join(row[col] for col in selected_columns))
 
-def check_condition(row, condition):
-    column_name, operator, value = condition
-    try:
-        row_value = row[column_name]
-        # Add logic to handle different operators
-        if operator == '==':
-            return row_value == value
-        elif operator == '>':
-            return float(row_value) > float(value)
-        # Add more operators as needed
-    except KeyError:
-        return False
+
+def check_condition(row, conditions, logical_operator):
+    results = []
+
+    for column_name, operator, value in conditions:
+        try:
+            row_value = row[column_name]
+            # Check each condition
+            result = False
+            if operator == '==':
+                result = row_value == value
+            elif operator in ['>', '<', '>=', '<=', '!=']:
+                result = eval(f'{float(row_value)} {operator} {float(value)}')
+            results.append(result)
+        except KeyError:
+            results.append(False)
+    if logical_operator == 'AND':
+        return all(results)
+    elif logical_operator == 'OR':
+        return any(results)
+    else:
+        return results[0] if results else False
+
+    # Apply AND or OR logic to the results
+    # return all(results) if and_operator else any(results)
 
 def update_meta_file(table_name, increment=False):
     meta_file = 'meta.json'
@@ -158,12 +171,27 @@ def update_meta_file(table_name, increment=False):
     with open(meta_file, 'w') as file:
         json.dump(meta_data, file)
 
+
 def parse_where_clause(where_clause):
-    parts = where_clause.split()
-    if len(parts) != 3:
-        return None
-    column_name, operator, value = parts
-    return (column_name, operator, value)
+    if ' AND ' in where_clause:
+        operator = 'AND'
+        conditions = where_clause.split(' AND ')
+    elif ' OR ' in where_clause:
+        operator = 'OR'
+        conditions = where_clause.split(' OR ')
+    else:
+        operator = None
+        conditions = [where_clause]
+
+    parsed_conditions = []
+    for condition in conditions:
+        parts = condition.split()
+        if len(parts) != 3:
+            continue
+        column_name, condition_operator, value = parts
+        parsed_conditions.append((column_name, condition_operator, value))
+
+    return parsed_conditions, operator
 
 # Command-Line Interface
 while True:
