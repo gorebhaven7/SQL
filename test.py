@@ -73,7 +73,7 @@ def select_command(cmd_parts):
         columns_part, rest = command_str.split(' from ')
         columns = [col.strip() for col in columns_part.split(',')]
         filename, where_clause = rest.split(' where ')
-        conditions, logical_operator = parse_where_clause(where_clause)
+        rpn_expression = parse_where_clause(where_clause)
     except ValueError:
         return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
 
@@ -93,12 +93,12 @@ def select_command(cmd_parts):
     else:
         chunk_line_count = 1  # Default value if meta file doesn't exist
     print("Chunk line count:", chunk_line_count)
-    process_file_in_chunks(filename, columns, chunk_line_count, conditions, logical_operator)
+    process_file_in_chunks(filename, columns, chunk_line_count, rpn_expression)
 
     return f"Select query executed on {filename}."
 
 
-def process_file_in_chunks(filename, columns, chunk_line_count, conditions, logical_operator):
+def process_file_in_chunks(filename, columns, chunk_line_count, rpn_expression):
     with open(filename, 'r', newline='') as file:
         reader = csv.DictReader(file)
         selected_columns = [col for col in columns if col in reader.fieldnames]
@@ -108,14 +108,13 @@ def process_file_in_chunks(filename, columns, chunk_line_count, conditions, logi
         for row in reader:
             chunk.append(row)
 
-        if len(chunk) >= chunk_line_count:
-            filtered_chunk = [r for r in chunk if not conditions or check_condition(r, conditions, logical_operator)]
-            process_chunk(filtered_chunk, chunk_count, selected_columns)
-            chunk, chunk_count = [], chunk_count + 1
+            if len(chunk) >= chunk_line_count:
+                filtered_chunk = [r for r in chunk if not rpn_expression or evaluate_rpn_expression(rpn_expression, r)]
+                process_chunk(filtered_chunk, chunk_count, selected_columns)
+                chunk, chunk_count = [], chunk_count + 1
 
         if chunk:  # Process last chunk
-            and_operator = ' AND ' in conditions
-            filtered_chunk = [r for r in chunk if not conditions or check_condition(r, conditions, and_operator)]
+            filtered_chunk = [r for r in chunk if not rpn_expression or evaluate_rpn_expression(rpn_expression, r)]
             process_chunk(filtered_chunk, chunk_count, selected_columns)
 
 def process_chunk(chunk, chunk_count, selected_columns):
@@ -123,28 +122,6 @@ def process_chunk(chunk, chunk_count, selected_columns):
     for row in chunk:
         print(','.join(row[col] for col in selected_columns))
 
-
-def check_condition(row, conditions, logical_operator):
-    results = []
-
-    for column_name, operator, value in conditions:
-        try:
-            row_value = row[column_name]
-            # Check each condition
-            result = False
-            if operator == '==':
-                result = row_value == value
-            elif operator in ['>', '<', '>=', '<=', '!=']:
-                result = eval(f'{float(row_value)} {operator} {float(value)}')
-            results.append(result)
-        except KeyError:
-            results.append(False)
-    if logical_operator == 'AND':
-        return all(results)
-    elif logical_operator == 'OR':
-        return any(results)
-    else:
-        return results[0] if results else False
 
 def update_meta_file(table_name, increment=False):
     meta_file = 'meta.json'
@@ -168,25 +145,100 @@ def update_meta_file(table_name, increment=False):
 
 
 def parse_where_clause(where_clause):
-    if ' AND ' in where_clause:
-        operator = 'AND'
-        conditions = where_clause.split(' AND ')
-    elif ' OR ' in where_clause:
-        operator = 'OR'
-        conditions = where_clause.split(' OR ')
-    else:
-        operator = None
-        conditions = [where_clause]
+    tokens = tokenize_where_clause(where_clause)
+    rpn_expression = shunting_yard(tokens)
+    # rpn_expression =['departement', 'finance', '==',]
+    return rpn_expression
 
-    parsed_conditions = []
-    for condition in conditions:
-        parts = condition.split()
-        if len(parts) != 3:
-            continue
-        column_name, condition_operator, value = parts
-        parsed_conditions.append((column_name, condition_operator, value))
+def tokenize_where_clause(where_clause):
+    # Updated pattern to correctly split around logical operators, numbers, and words
+    pattern = r'(\band\b|\bor\b|\(|\)|\!=|==|<=|>=|<|>|\d+|\b\w+\b|"[^"]*"|\'[^\']*\')'
+    tokens = re.split(pattern, where_clause)
+    return [token.strip() for token in tokens if token.strip()]
 
-    return parsed_conditions, operator
+
+def shunting_yard(tokens):
+    precedence = {'OR': 1, 'AND': 2, '==': 3, '!=': 3, '<': 3, '>': 3, '<=': 3, '>=': 3}
+    output_queue = []
+    operator_stack = []
+
+    for token in tokens:
+        print(f"Processing token: {token}")
+        if token.isidentifier() or token.replace('.', '', 1).isdigit() or token[0] in ['"', "'"]:
+            output_queue.append(token)
+        elif token in precedence:
+            while operator_stack and operator_stack[-1] != '(' and precedence[operator_stack[-1]] >= precedence[token]:
+                output_queue.append(operator_stack.pop())
+            operator_stack.append(token)
+        elif token == '(':
+            operator_stack.append(token)
+        elif token == ')':
+            while operator_stack and operator_stack[-1] != '(':
+                output_queue.append(operator_stack.pop())
+            operator_stack.pop()  # Remove the '('
+
+    while operator_stack:
+        output_queue.append(operator_stack.pop())
+
+    print(f"Final RPN: {output_queue}")  # Debug print at the end
+    return output_queue
+
+def evaluate_rpn_expression(rpn_expression, row):
+    stack = []
+    operators = {'OR', 'AND', '==', '!=', '<', '>', '<=', '>='}
+    print(f"Evaluating RPN: {rpn_expression}")
+
+    for token in rpn_expression:
+        if token not in operators:  # Check if the token is not an operator
+            if token.replace('.', '', 1).isdigit() or token[0] in ['"', "'"]:
+                stack.append(token.strip('"\''))  # Handle literals
+            else:
+                stack.append(row.get(token, ''))  # Assume it's a column name
+        else:
+            operand2 = stack.pop()
+            operand1 = stack.pop()
+            result = evaluate_condition(operand1, token, operand2)
+            print(f"{operand1} {token} {operand2} = {result}")
+            stack.append(result)
+
+    return stack[0] if stack else None
+
+
+def evaluate_condition(operand1, operator, operand2):
+    operand1 = convert_operand(operand1)
+    operand2 = convert_operand(operand2)
+
+    # Ensure comparison is between compatible types
+    if isinstance(operand1, type(operand2)) or isinstance(operand2, type(operand1)):
+        if operator == '==':
+            return operand1 == operand2
+        elif operator == '!=':
+            return operand1 != operand2
+        elif operator in ['>', '<', '>=', '<=']:
+            # For numeric comparisons, both operands should be numbers
+            if isinstance(operand1, (int, float)) and isinstance(operand2, (int, float)):
+                if operator == '>':
+                    return operand1 > operand2
+                elif operator == '<':
+                    return operand1 < operand2
+                elif operator == '>=':
+                    return operand1 >= operand2
+                elif operator == '<=':
+                    return operand1 <= operand2
+        elif operator == 'AND':
+            return bool(operand1) and bool(operand2)
+        elif operator == 'OR':
+            return bool(operand1) or bool(operand2)
+    return False  # In case of incompatible types or unknown operator
+
+
+def convert_operand(operand):
+    if isinstance(operand, str):
+        try:
+            return float(operand) if operand.replace('.', '', 1).isdigit() else operand
+        except ValueError:
+            return operand
+    return operand 
 
 # Command-Line Interface
 while True:
