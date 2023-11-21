@@ -1,0 +1,7 @@
+employees.csv.id,employees.csv.name,employees.csv.department,employees.csv.salary
+1,Alice,HR,100000
+2,Bob,Sales,120000
+3,Charlie,IT,80000
+4,David,Marketing,95000
+5,Eve,Finance,25000
+10,Jane,Finance,130000

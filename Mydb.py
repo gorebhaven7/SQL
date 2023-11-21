@@ -17,6 +17,9 @@ def process_command(command):
 
     elif cmd_type == "select":
         return select_command(cmd_parts)
+    
+    elif cmd_type == "delete":
+        return delete_command(cmd_parts)
 
     else:
         return "Unknown command"
@@ -185,7 +188,8 @@ def perform_join(columns,table1,table2,condition,fields,where_clause=None,chunk_
     delete_file_if_exists(join_file)
     chunk_line_count1 = get_number_lines(table1)
     chunk_line_count2 = get_number_lines(table2)
-    where_condition = parse_conditions(where_clause)
+    if where_clause!=None:
+        where_condition = parse_conditions(where_clause)
     # print("where",where_condition)
     filename1 = table1
     if not table1.endswith('.csv'):
@@ -204,10 +208,14 @@ def perform_join(columns,table1,table2,condition,fields,where_clause=None,chunk_
                         for row2 in chunk2:
                             if row1[table1_key] == row2[table2_key]:
                                 joined_row = prefix_row_keys(row1, table1) | prefix_row_keys(row2, table2)
-                                filtered_row = evaluate_conditions(joined_row, where_condition[0])
-                                if filtered_row:
+                                if where_clause!=None:
+                                    filtered_row = evaluate_conditions(joined_row, where_condition[0])
+                                    if filtered_row:
+                                        print("Joined",joined_row)
+                                        write_to_csv_json(joined_row, join_file)
+                                else:
                                     print("Joined",joined_row)
-                                    write_to_csv_join(joined_row, join_file)
+                                    write_to_csv_json(joined_row, join_file)
 
 def write_to_csv(chunk, filename):
     with open(filename, 'w', newline='') as file:
@@ -215,7 +223,7 @@ def write_to_csv(chunk, filename):
         for r in chunk:
             writer.writerow(r.values())
 
-def write_to_csv_join(row, filename):
+def write_to_csv_json(row, filename):
     with open(filename, 'a', newline='') as file:
         fieldnames = row.keys()
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -302,6 +310,11 @@ def evaluate_condition(item, condition):
     field, operator, value = condition
     field = field.strip('()')
     value = value.strip('()')
+    if not item[field]:
+        if operator == '==':
+            item[field] = '0'
+        else:
+            item[field] = 0
     if operator == '>':
         return int(item[field]) > int(value)
     elif operator == '<':
@@ -347,6 +360,62 @@ def evaluate_conditions(item, conditions):
         return evaluate_condition(item, conds)
 
     return recursive_eval(conditions)
+
+def delete_command(cmd_parts):
+    #Eg: delete from student where age==26
+    if len(cmd_parts) < 2:
+        return "Invalid select command format"
+    
+    command_str = ' '.join(cmd_parts[1:])
+    # try:
+    columns_part = command_str.split('from ')
+    if "where" in columns_part[1]:
+        filename, where_clause = columns_part[1].split(' where ')
+        # print("Where",where_clause)
+        conditions,order_by = parse_conditions(where_clause)
+        print(conditions)
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+        
+        chunk_line_count = get_number_lines(filename)
+        execute_query_delete(filename, conditions, chunk_line_count)
+
+    else:
+        filename = rest
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+
+        chunk_line_count = get_number_lines(filename)
+
+        execute_query_delete(filename, columns, None, None, chunk_line_count=10)
+
+def execute_query_delete(filename, conditions=None, chunk_line_count=10):
+    with open(filename, 'r', newline='') as file:
+        reader = csv.DictReader(file)
+        selected_columns = [col for col in reader.fieldnames]
+        print(selected_columns)
+        newfile = "new_file.csv"
+        chunk_count, chunk,result = 0, [],[]
+        for row in reader:
+            chunk.append(row)
+
+            if len(chunk) >= chunk_line_count:
+                for r in chunk:
+                    if not evaluate_conditions(r, conditions):
+                        print("Deleted",r)
+                        chunk, chunk_count = [], chunk_count + 1
+                        write_to_csv_json(row, newfile)
+
+        if chunk:  # Process last chunk
+            for r in chunk:
+                if not evaluate_conditions(r, conditions):
+                    print("Deleted",r)
+                    chunk, chunk_count = [], chunk_count + 1
+                    write_to_csv_json(row, newfile)
+        
+    os.rename(newfile, filename)
+    return None
+
 
 def get_number_lines(filename):
     meta_file = 'meta.json'
