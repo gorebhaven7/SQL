@@ -1,7 +1,7 @@
-id,name,department
-1,Alice,HR
-2,Bob,Sales
-3,Charlie,IT
-4,David,Marketing
-5,Eve,Finance
-10,Jane,Finance
+id,name,department,salary
+1,Alice,HR,100000
+2,Bob,Sales,120000
+3,Charlie,IT,80000
+4,David,Marketing,95000
+5,Eve,Finance,25000
+10,Jane,Finance,130000

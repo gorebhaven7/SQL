@@ -2,6 +2,7 @@ import re
 import os
 import csv
 import json
+from collections import defaultdict
 
 def process_command(command):
     cmd_parts = command.split(maxsplit=2)
@@ -16,6 +17,7 @@ def process_command(command):
 
     elif cmd_type == "select":
         return select_command(cmd_parts)
+
     else:
         return "Unknown command"
 
@@ -73,44 +75,99 @@ def insert_into_command(cmd_parts):
 def select_command(cmd_parts):
     #Eg: select id,name from student where id==2
     #Eg: select id,name from employees where id>2 AND department==Finance
+    #Eg: select department,COUNT() from employees group_by department
     print(cmd_parts)
     if len(cmd_parts) < 2:
         return "Invalid select command format"
     
     command_str = ' '.join(cmd_parts[1:])
-    try:
-        columns_part, rest = command_str.split(' from ')
-        columns = [col.strip() for col in columns_part.split(',')]
+    # try:
+    columns_part, rest = command_str.split(' from ')
+    columns = [col.strip() for col in columns_part.split(',')]
 
-        if "join" in rest:
-            table1,on_part = rest.split(' join ')
-            table2,condition = on_part.split(' on ')
-            perform_join(columns,table1,table2,condition,columns)
+    if "group_by" in rest:
+        filename, group_by = rest.split(' group_by ')
+        if not filename.endswith('.csv'):
+            filename += '.csv'
 
-        elif "where" in rest:
-            filename, where_clause = rest.split(' where ')
-            conditions,order_by = parse_conditions(where_clause)
-            if not filename.endswith('.csv'):
-                filename += '.csv'
-            
-            chunk_line_count = get_number_lines(filename)
-            execute_query(filename, columns, conditions, order_by, chunk_line_count)
+        aggregate_info = columns[1].split('(')  # Splitting to get aggregate function and column
+        aggregate_func = aggregate_info[0].upper()  # Getting the aggregate function (SUM, MAX, MIN, COUNT)
+        aggregate_col = aggregate_info[1][:-1] if aggregate_func != "COUNT" else None  # Getting the column for aggregation
 
-        else:
-            filename = rest
-            if not filename.endswith('.csv'):
-                filename += '.csv'
+        chunk_line_count = get_number_lines(filename)
+        perform_groupBy(filename, columns[0], aggregate_func, aggregate_col, chunk_line_count)
 
-            chunk_line_count = get_number_lines(filename)
+    elif "join" in rest:
+        table1,on_part = rest.split(' join ')
+        table2,condition = on_part.split(' on ')
+        perform_join(columns,table1,table2,condition,columns)
 
-            execute_query(filename, columns, None, None, chunk_line_count=10)
+    elif "where" in rest:
+        filename, where_clause = rest.split(' where ')
+        conditions,order_by = parse_conditions(where_clause)
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+        
+        chunk_line_count = get_number_lines(filename)
+        execute_query(filename, columns, conditions, order_by, chunk_line_count)
 
-    except ValueError:
-        return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
+    else:
+        filename = rest
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+
+        chunk_line_count = get_number_lines(filename)
+
+        execute_query(filename, columns, None, None, chunk_line_count=10)
+
+    # except ValueError:
+    #     return "Invalid select command format: "
 
     return f"Select query executed."
 
-def perform_join(columns,table1,table2,condition,fields,chunk_line_count=2):
+def perform_groupBy(filename, group_field, aggregate_func, aggregate_field, chunk_line_count=10):
+    group_results = defaultdict(lambda: {"SUM": 0, "COUNT": 0, "MAX": float('-inf'), "MIN": float('inf')})
+
+    with open(filename, 'r', newline='') as file:
+        reader = csv.DictReader(file)
+        chunk = []
+
+        for row in reader:
+            chunk.append(row)
+            if len(chunk) >= chunk_line_count:
+                process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field)
+                chunk = []  # Reset the chunk
+
+        if chunk:  # Process the last chunk if it exists
+            process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field)
+
+    print(group_results)
+    # Print or process the group results as needed
+    for group, values in group_results.items():
+        result = values[aggregate_func]
+        print(f"{group}: {aggregate_func} = {result}")
+
+def process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field):
+    for row in chunk:
+        group_value = row[group_field]
+
+        try:
+            aggregate_value = float(row[aggregate_field]) if aggregate_field and row[aggregate_field] else 0
+        except ValueError:
+            print(f"Warning: Invalid value for aggregation field '{aggregate_field}' in row: {row}")
+            aggregate_value = 0
+
+        if aggregate_func == "MAX":
+            group_results[group_value]["MAX"] = max(group_results[group_value]["MAX"], aggregate_value)
+        elif aggregate_func == "MIN":
+            group_results[group_value]["MIN"] = min(group_results[group_value]["MIN"], aggregate_value)
+        elif aggregate_func == "SUM":
+            group_results[group_value]["SUM"] += aggregate_value
+        elif aggregate_func == "COUNT":
+            group_results[group_value]["COUNT"] += 1
+
+
+def perform_join(columns,table1,table2,condition,fields,chunk_line_count=10):
     #eg: select id,name from student.csv join employees.csv on student.id==employees.id
     #eg: select id,name from employees.csv join employees.csv on employees.id==employees.id
     
