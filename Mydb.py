@@ -380,14 +380,6 @@ def delete_command(cmd_parts):
         chunk_line_count = get_number_lines(filename)
         execute_query_delete(filename, conditions, chunk_line_count)
 
-    else:
-        filename = rest
-        if not filename.endswith('.csv'):
-            filename += '.csv'
-
-        chunk_line_count = get_number_lines(filename)
-
-        execute_query_delete(filename, columns, None, None, chunk_line_count=10)
 
 def execute_query_delete(filename, conditions=None, chunk_line_count=10):
     with open(filename, 'r', newline='') as file:
