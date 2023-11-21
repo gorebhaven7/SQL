@@ -134,6 +134,10 @@ def select_command(cmd_parts):
     return f"Select query executed."
 
 def perform_groupBy(filename, group_field, aggregate_func, aggregate_field, chunk_line_count=10):
+    #Eg: select department, COUNT() from employees group_by department
+    #Eg: select depaartment, SUM(salary) from employees group_by department
+    #Eg: select name, MAX(age) from student group_by age
+    #Eg: select name, MIN(age) from student group_by age
     group_results = defaultdict(lambda: {"SUM": 0, "COUNT": 0, "MAX": float('-inf'), "MIN": float('inf')})
 
     with open(filename, 'r', newline='') as file:
