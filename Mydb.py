@@ -76,7 +76,7 @@ def select_command(cmd_parts):
     #Eg: select id,name from student where id==2
     #Eg: select id,name from employees where id>2 AND department==Finance
     #Eg: select department,COUNT() from employees group_by department
-    print(cmd_parts)
+    # print(cmd_parts)
     if len(cmd_parts) < 2:
         return "Invalid select command format"
     
@@ -100,10 +100,15 @@ def select_command(cmd_parts):
     elif "join" in rest:
         table1,on_part = rest.split(' join ')
         table2,condition = on_part.split(' on ')
-        perform_join(columns,table1,table2,condition,columns)
+        if 'where' in condition:
+            join_condtition,where_clause = condition.split(' where ')
+            perform_join(columns,table1,table2,join_condtition,columns,where_clause)
+        else:
+            perform_join(columns,table1,table2,condition,columns)
 
     elif "where" in rest:
         filename, where_clause = rest.split(' where ')
+        # print("Where",where_clause)
         conditions,order_by = parse_conditions(where_clause)
         if not filename.endswith('.csv'):
             filename += '.csv'
@@ -141,7 +146,7 @@ def perform_groupBy(filename, group_field, aggregate_func, aggregate_field, chun
         if chunk:  # Process the last chunk if it exists
             process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field)
 
-    print(group_results)
+    # print(group_results)
     # Print or process the group results as needed
     for group, values in group_results.items():
         result = values[aggregate_func]
@@ -167,30 +172,42 @@ def process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_
             group_results[group_value]["COUNT"] += 1
 
 
-def perform_join(columns,table1,table2,condition,fields,chunk_line_count=10):
+def perform_join(columns,table1,table2,condition,fields,where_clause=None,chunk_line_count=10):
     #eg: select id,name from student.csv join employees.csv on student.id==employees.id
     #eg: select id,name from employees.csv join employees.csv on employees.id==employees.id
+    #eg: select id,name from student join employees on student.id==employees.id where student.id>2
     
     condition = condition.split('==') 
     table1_key = condition[0].split('.')[-1]  
     table2_key = condition[1].split('.')[-1]  
-
+    # print(condition,where_clause)
     join_file = table1.split('.')[0] + '_' + table2.split('.')[0] + '.csv'
     delete_file_if_exists(join_file)
     chunk_line_count1 = get_number_lines(table1)
     chunk_line_count2 = get_number_lines(table2)
+    where_condition = parse_conditions(where_clause)
+    # print("where",where_condition)
+    filename1 = table1
+    if not table1.endswith('.csv'):
+        filename1 += '.csv'
+    filename2 = table2
+    if not table2.endswith('.csv'):
+        filename2 += '.csv'
 
-    with open(table1, 'r', newline='') as file1:
+    with open(filename1, 'r', newline='') as file1:
         reader1 = csv.DictReader(file1)
         for chunk1 in chunk_reader(reader1, chunk_line_count1):
-            with open(table2, 'r', newline='') as file2:
+            with open(filename2, 'r', newline='') as file2:
                 reader2 = csv.DictReader(file2)
                 for chunk2 in chunk_reader(reader2, chunk_line_count2):
                     for row1 in chunk1:
                         for row2 in chunk2:
                             if row1[table1_key] == row2[table2_key]:
                                 joined_row = prefix_row_keys(row1, table1) | prefix_row_keys(row2, table2)
-                                write_to_csv_join(joined_row, join_file)
+                                filtered_row = evaluate_conditions(joined_row, where_condition[0])
+                                if filtered_row:
+                                    print("Joined",joined_row)
+                                    write_to_csv_join(joined_row, join_file)
 
 def write_to_csv(chunk, filename):
     with open(filename, 'w', newline='') as file:
@@ -253,7 +270,7 @@ def parse_conditions(where_clause):
             tks_stack.append(token)
     return None if not tks_stack else tks_stack[::-1], order_by
 
-def execute_query(filename,fields=None, conditions=None,order_by=None, chunk_line_count=10):
+def execute_query(filename,fields=None, conditions=None,ordersel_by=None, chunk_line_count=10):
 
     with open(filename, 'r', newline='') as file:
         reader = csv.DictReader(file)
@@ -299,6 +316,7 @@ def evaluate_condition(item, condition):
         raise ValueError(f"Unsupported operator: {operator}")
 
 def evaluate_conditions(item, conditions):
+    # print(item,conditions)
     if not conditions:
         return True
 
