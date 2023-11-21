@@ -2,10 +2,11 @@ import re
 import os
 import csv
 import json
+from collections import defaultdict
 
 def process_command(command):
     cmd_parts = command.split(maxsplit=2)
-    print(cmd_parts)
+    
     cmd_type = cmd_parts[0]          
 
     if cmd_type == "create_table":
@@ -13,8 +14,10 @@ def process_command(command):
 
     elif cmd_type == "insert_into":
         return insert_into_command(cmd_parts)
+
     elif cmd_type == "select":
         return select_command(cmd_parts)
+
     else:
         return "Unknown command"
 
@@ -22,6 +25,7 @@ def create_table_command(cmd_parts):
     #Eg: create_table student id,name,age
     if len(cmd_parts) < 3:
         return "Invalid create_table command format"
+
     filename, columns = cmd_parts[1], cmd_parts[2]
     columns = columns.split(",")
     if not filename.endswith('.csv'):
@@ -34,19 +38,18 @@ def create_table_command(cmd_parts):
     with open(filename, 'w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=columns)
         writer.writeheader()
+
     return f"Table {filename} created with columns {', '.join(columns)}."
 
 def insert_into_command(cmd_parts):
     #Eg: insert_into student id=1,name=Bhaven,age=25
+    #Eg: insert_into student id=2,name=Prads,age=24
     if len(cmd_parts) != 3:
         return "Invalid insert_into command format"
+
     filename, column_data = cmd_parts[1], cmd_parts[2]
     if not filename.endswith('.csv'):
         filename += '.csv'
-
-    # Check if the file already exists
-    if os.path.exists(filename):
-        return f"Table {filename} already exists."
 
     # Parsing column data
     data = {}
@@ -66,65 +69,168 @@ def insert_into_command(cmd_parts):
     with open(filename, 'a', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=header)
         writer.writerow(ordered_data)
-        # update_meta_file(filename, increment=True)
 
     return f"Values inserted into {filename}."
 
 def select_command(cmd_parts):
     #Eg: select id,name from student where id==2
+    #Eg: select id,name from employees where id>2 AND department==Finance
+    #Eg: select department,COUNT() from employees group_by department
     print(cmd_parts)
     if len(cmd_parts) < 2:
         return "Invalid select command format"
     
     command_str = ' '.join(cmd_parts[1:])
-    try:
-        columns_part, rest = command_str.split(' from ')
-        columns = [col.strip() for col in columns_part.split(',')]
-        if "where" in rest:
-            filename, where_clause = rest.split(' where ')
-            print("where",where_clause)
-            print("Coulumns", columns)
-            conditions,order_by = parse_conditions(where_clause)
-            chunk_size = 10
-            if not filename.endswith('.csv'):
-                filename += '.csv'
+    # try:
+    columns_part, rest = command_str.split(' from ')
+    columns = [col.strip() for col in columns_part.split(',')]
 
-            # Check if the file already exists
-            if os.path.exists(filename):
-                return f"Table {filename} already exists."
+    if "group_by" in rest:
+        filename, group_by = rest.split(' group_by ')
+        if not filename.endswith('.csv'):
+            filename += '.csv'
 
-            execute_query(filename, columns, conditions, order_by, chunk_size)
-        else:
-            filename = rest
-            if not filename.endswith('.csv'):
-                filename += '.csv'
+        aggregate_info = columns[1].split('(')  # Splitting to get aggregate function and column
+        aggregate_func = aggregate_info[0].upper()  # Getting the aggregate function (SUM, MAX, MIN, COUNT)
+        aggregate_col = aggregate_info[1][:-1] if aggregate_func != "COUNT" else None  # Getting the column for aggregation
 
-            # Check if the file already exists
-            if os.path.exists(filename):
-                return f"Table {filename} already exists."
+        chunk_line_count = get_number_lines(filename)
+        perform_groupBy(filename, columns[0], aggregate_func, aggregate_col, chunk_line_count)
 
-            execute_query(filename, columns)
+    elif "join" in rest:
+        table1,on_part = rest.split(' join ')
+        table2,condition = on_part.split(' on ')
+        perform_join(columns,table1,table2,condition,columns)
 
-    except ValueError:
-        return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
+    elif "where" in rest:
+        filename, where_clause = rest.split(' where ')
+        conditions,order_by = parse_conditions(where_clause)
+        if not filename.endswith('.csv'):
+            filename += '.csv'
+        
+        chunk_line_count = get_number_lines(filename)
+        execute_query(filename, columns, conditions, order_by, chunk_line_count)
 
-    meta_file = 'meta.json'
-    if os.path.exists(meta_file):
-        with open(meta_file, 'r') as file:
-            meta_data = json.load(file)
-            table_lines = meta_data.get(filename, 0)
-            chunk_line_count = max(1, table_lines // 5)
     else:
-        chunk_line_count = 1  # Default value if meta file doesn't exist
-    print("Chunk line count:", chunk_line_count)
-    # process_file_in_chunks(filename, columns, chunk_line_count, conditions, logical_operator)
+        filename = rest
+        if not filename.endswith('.csv'):
+            filename += '.csv'
 
-    return f"Select query executed on {filename}."
+        chunk_line_count = get_number_lines(filename)
+
+        execute_query(filename, columns, None, None, chunk_line_count=10)
+
+    # except ValueError:
+    #     return "Invalid select command format: "
+
+    return f"Select query executed."
+
+def perform_groupBy(filename, group_field, aggregate_func, aggregate_field, chunk_line_count=10):
+    group_results = defaultdict(lambda: {"SUM": 0, "COUNT": 0, "MAX": float('-inf'), "MIN": float('inf')})
+
+    with open(filename, 'r', newline='') as file:
+        reader = csv.DictReader(file)
+        chunk = []
+
+        for row in reader:
+            chunk.append(row)
+            if len(chunk) >= chunk_line_count:
+                process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field)
+                chunk = []  # Reset the chunk
+
+        if chunk:  # Process the last chunk if it exists
+            process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field)
+
+    print(group_results)
+    # Print or process the group results as needed
+    for group, values in group_results.items():
+        result = values[aggregate_func]
+        print(f"{group}: {aggregate_func} = {result}")
+
+def process_chunk2(chunk, group_results, group_field, aggregate_func, aggregate_field):
+    for row in chunk:
+        group_value = row[group_field]
+
+        try:
+            aggregate_value = float(row[aggregate_field]) if aggregate_field and row[aggregate_field] else 0
+        except ValueError:
+            print(f"Warning: Invalid value for aggregation field '{aggregate_field}' in row: {row}")
+            aggregate_value = 0
+
+        if aggregate_func == "MAX":
+            group_results[group_value]["MAX"] = max(group_results[group_value]["MAX"], aggregate_value)
+        elif aggregate_func == "MIN":
+            group_results[group_value]["MIN"] = min(group_results[group_value]["MIN"], aggregate_value)
+        elif aggregate_func == "SUM":
+            group_results[group_value]["SUM"] += aggregate_value
+        elif aggregate_func == "COUNT":
+            group_results[group_value]["COUNT"] += 1
+
+
+def perform_join(columns,table1,table2,condition,fields,chunk_line_count=10):
+    #eg: select id,name from student.csv join employees.csv on student.id==employees.id
+    #eg: select id,name from employees.csv join employees.csv on employees.id==employees.id
+    
+    condition = condition.split('==') 
+    table1_key = condition[0].split('.')[-1]  
+    table2_key = condition[1].split('.')[-1]  
+
+    join_file = table1.split('.')[0] + '_' + table2.split('.')[0] + '.csv'
+    delete_file_if_exists(join_file)
+    chunk_line_count1 = get_number_lines(table1)
+    chunk_line_count2 = get_number_lines(table2)
+
+    with open(table1, 'r', newline='') as file1:
+        reader1 = csv.DictReader(file1)
+        for chunk1 in chunk_reader(reader1, chunk_line_count1):
+            with open(table2, 'r', newline='') as file2:
+                reader2 = csv.DictReader(file2)
+                for chunk2 in chunk_reader(reader2, chunk_line_count2):
+                    for row1 in chunk1:
+                        for row2 in chunk2:
+                            if row1[table1_key] == row2[table2_key]:
+                                joined_row = prefix_row_keys(row1, table1) | prefix_row_keys(row2, table2)
+                                write_to_csv_join(joined_row, join_file)
+
+def write_to_csv(chunk, filename):
+    with open(filename, 'w', newline='') as file:
+        writer = csv.writer(file)
+        for r in chunk:
+            writer.writerow(r.values())
+
+def write_to_csv_join(row, filename):
+    with open(filename, 'a', newline='') as file:
+        fieldnames = row.keys()
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        
+        if file.tell() == 0: 
+            writer.writeheader()
+
+        writer.writerow(row)
+
+def delete_file_if_exists(file_path):
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        print(f"Deleted existing file: {file_path}")
+
+def get_prefixed_fieldnames(fieldnames, prefix):
+    return [f"{prefix}.{fieldname}" for fieldname in fieldnames]
+
+def prefix_row_keys(row, prefix):
+    return {f"{prefix}.{k}": v for k, v in row.items()}
+
+def chunk_reader(reader, chunk_size):
+    chunk = []
+    for row in reader:
+        chunk.append(row)
+        if len(chunk) == chunk_size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 def parse_conditions(where_clause):
-    print(where_clause)
-    "(department==HR AND salary>60000) AND (id==146 OR id==102) ORDER_BY salary DESC"
-    '''split ORDER_BY if exists'''
+    
     if 'ORDER_BY' in where_clause:
         where_clause, order_by = where_clause.split('ORDER_BY')
         order_by = order_by.split()
@@ -145,7 +251,6 @@ def parse_conditions(where_clause):
             tks.pop()
         else:
             tks_stack.append(token)
-    print(tks_stack[::-1])
     return None if not tks_stack else tks_stack[::-1], order_by
 
 def execute_query(filename,fields=None, conditions=None,order_by=None, chunk_line_count=10):
@@ -153,24 +258,24 @@ def execute_query(filename,fields=None, conditions=None,order_by=None, chunk_lin
     with open(filename, 'r', newline='') as file:
         reader = csv.DictReader(file)
         selected_columns = [col for col in fields if col in reader.fieldnames]
-        print("Prad",','.join(selected_columns))
 
         chunk_count, chunk,result = 0, [],[]
         for row in reader:
             chunk.append(row)
 
-        if len(chunk) >= chunk_line_count:
-            filtered_chunk = [r for r in chunk if not conditions or evaluate_conditions(r, conditions)]
-            result.extend(process_chunk(filtered_chunk, chunk_count, selected_columns))
-            chunk, chunk_count = [], chunk_count + 1
+            if len(chunk) >= chunk_line_count:
+                filtered_chunk = [r for r in chunk if not conditions or evaluate_conditions(r, conditions)]
+                result.extend(process_chunk(filtered_chunk, chunk_count, selected_columns))
+                chunk, chunk_count = [], chunk_count + 1
+                write_to_csv(filtered_chunk, "temp_"+str(chunk_count)+".csv")
 
         if chunk:  # Process last chunk
             filtered_chunk = [r for r in chunk if not conditions or evaluate_conditions(r, conditions)]
             result.extend(process_chunk(filtered_chunk, chunk_count, selected_columns))
+            write_to_csv(filtered_chunk, "temp_"+str(chunk_count)+".csv")
     print(result)
 
 def process_chunk(chunk, chunk_count, selected_columns):
-    # print(f"Chunk {chunk_count}:")
     ans = []
     for row in chunk:
         ans.append(row)
@@ -180,7 +285,6 @@ def evaluate_condition(item, condition):
     field, operator, value = condition
     field = field.strip('()')
     value = value.strip('()')
-    # print(field, operator, value)
     if operator == '>':
         return int(item[field]) > int(value)
     elif operator == '<':
@@ -199,14 +303,12 @@ def evaluate_conditions(item, conditions):
         return True
 
     def eval_logical_ops(operand1, operator, operand2):
-        # print(operand1, operator, operand2)
         if operator == 'AND':
             return operand1 and operand2
         elif operator == 'OR':
             return operand1 or operand2
 
     def recursive_eval(conds):
-        # print(conds)
         if not conds:
             return True
         
@@ -227,6 +329,18 @@ def evaluate_conditions(item, conditions):
         return evaluate_condition(item, conds)
 
     return recursive_eval(conditions)
+
+def get_number_lines(filename):
+    meta_file = 'meta.json'
+    if os.path.exists(meta_file):
+        with open(meta_file, 'r') as file:
+            meta_data = json.load(file)
+            table_lines = meta_data.get(filename, 0)
+            chunk_line_count = max(1, table_lines // 5)
+    else:
+        chunk_line_count = 1 
+    print("Chunk line count:", chunk_line_count)
+    return chunk_line_count
 
 while True:
     command = input("MyDB > ")
