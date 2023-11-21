@@ -2,6 +2,7 @@ import re
 import os
 import csv
 import json
+import glob
 
 
 def process_command(command):
@@ -81,37 +82,89 @@ def select_command(cmd_parts):
         return "Invalid select command format"
 
     command_str = ' '.join(cmd_parts[1:])
-    try:
-        columns_part, rest = command_str.split(' from ')
-        columns = [col.strip() for col in columns_part.split(',')]
-        if "where" in rest:
-            filename, where_clause = rest.split(' where ')
-            print("where", where_clause)
-            print("Coulumns", columns)
-            conditions, order_by = parse_conditions(where_clause)
-            chunk_size = 2
-            if not filename.endswith('.csv'):
-                filename += '.csv'
+    # try:
+    #     columns_part, rest = command_str.split(' from ')
+    #     columns = [col.strip() for col in columns_part.split(',')]
+    #     if "where" in rest:
+    #         filename, where_clause = rest.split(' where ')
+    #         print("where", where_clause)
+    #         print("Coulumns", columns)
+    #         conditions, order_by = parse_conditions(where_clause)
+    #         chunk_size = 10
+    #         if not filename.endswith('.csv'):
+    #             filename += '.csv'
+    #
+    #         # Check if the file already exists
+    #         if not os.path.exists(filename):
+    #             return f"Table {filename} doesn't exists."
+    #
+    #         execute_query(filename, columns, conditions, order_by, chunk_size)
+    #     elif "ORDER_BY" in rest:
+    #         filename, order_by = rest.split("ORDER_BY")
+    #         print(filename, order_by)
+    #         if not filename.endswith('.csv'):
+    #             filename = filename.strip()
+    #             filename += '.csv'
+    #
+    #         # Check if the file already exists
+    #         if not os.path.exists(filename):
+    #             return f"Table {filename} doesn't exists."
+    #
+    #         execute_query(filename, columns, order_by=[order_by.strip()])
+    #     else:
+    #         filename = rest
+    #         if not filename.endswith('.csv'):
+    #             filename += '.csv'
+    #
+    #         # Check if the file already exists
+    #         if not os.path.exists(filename):
+    #             return f"Table {filename} doesn't exists."
+    #
+    #         execute_query(filename, columns)
+    #
+    # except ValueError:
+    #     return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
+    ######################################
+    columns_part, rest = command_str.split(' from ')
+    columns = [col.strip() for col in columns_part.split(',')]
+    if "where" in rest:
+        filename, where_clause = rest.split(' where ')
+        print("where", where_clause)
+        print("Coulumns", columns)
+        conditions, order_by = parse_conditions(where_clause)
+        chunk_size = 10
+        if not filename.endswith('.csv'):
+            filename += '.csv'
 
-            # Check if the file already exists
-            if not os.path.exists(filename):
-                return f"Table {filename} doesn't exists."
+        # Check if the file already exists
+        if not os.path.exists(filename):
+            return f"Table {filename} doesn't exists."
 
-            execute_query(filename, columns, conditions, order_by, chunk_size)
-        else:
-            filename = rest
-            if not filename.endswith('.csv'):
-                filename += '.csv'
+        execute_query(filename, columns, conditions, order_by, chunk_size)
+    elif "ORDER_BY" in rest:
+        filename, order_by = rest.split("ORDER_BY")
+        print(filename, order_by)
+        if not filename.endswith('.csv'):
+            filename = filename.strip()
+            filename += '.csv'
 
-            # Check if the file already exists
-            if not os.path.exists(filename):
-                return f"Table {filename} doesn't exists."
+        # Check if the file already exists
+        if not os.path.exists(filename):
+            return f"Table {filename} doesn't exists."
 
-            execute_query(filename, columns)
+        execute_query(filename, columns, order_by=[order_by.strip()])
+    else:
+        filename = rest
+        if not filename.endswith('.csv'):
+            filename += '.csv'
 
-    except ValueError:
-        return "Invalid select command format. Ensure you use 'select col1, col2 from filename where condition'."
+        # Check if the file already exists
+        if not os.path.exists(filename):
+            return f"Table {filename} doesn't exists."
 
+        execute_query(filename, columns)
+
+    ######################################
     meta_file = 'meta.json'
     if os.path.exists(meta_file):
         with open(meta_file, 'r') as file:
@@ -161,6 +214,7 @@ def execute_query(filename, fields=None, conditions=None, order_by=None, chunk_l
         print("Prad", ','.join(selected_columns))
 
         chunk_count, chunk, result = 0, [], []
+        temp_files = []
         for row in reader:
             chunk.append(row)
 
@@ -170,21 +224,129 @@ def execute_query(filename, fields=None, conditions=None, order_by=None, chunk_l
                     result.extend(process_chunk(filtered_chunk, chunk_count, selected_columns))
                     chunk, chunk_count = [], chunk_count + 1
                     #  write chunk to csv file
-                    write_to_csv(filtered_chunk, "temp_"+str(chunk_count)+".csv")
+                    temp_files.append("temp_" + str(chunk_count) + ".csv")
+                    write_to_csv(filtered_chunk, "temp_" + str(chunk_count) + ".csv", reader.fieldnames, order_by)
 
         if chunk:  # Process last chunk
             filtered_chunk = [r for r in chunk if not conditions or evaluate_conditions(r, conditions)]
             if filtered_chunk:
                 result.extend(process_chunk(filtered_chunk, chunk_count, selected_columns))
+                chunk, chunk_count = [], chunk_count + 1
                 #  write chunk to csv file
-                write_to_csv(filtered_chunk, "temp_"+str(chunk_count+1)+".csv")
+                temp_files.append("temp_" + str(chunk_count) + ".csv")
+                write_to_csv(filtered_chunk, "temp_" + str(chunk_count) + ".csv", reader.fieldnames, order_by)
     print(result)
+    # print(temp_files)
+
+    if order_by:
+        if order_by[0] not in reader.fieldnames:
+            print("Invalid column")
+            return
+        merge_sort_csv_files(temp_files, "order_by_result.csv", order_by)
+
+    for filename in glob.glob("temp*"):
+        os.remove(filename)
 
 
-def write_to_csv(chunk, filename):
+def merge_two_csv_files(file1, file2, output_file, col):
+    """
+    Merges two sorted CSV files into a single sorted CSV file.
+    Assumes that the input CSV files have the same headers and are already sorted.
+    """
+    with open(file1, 'r', newline='', encoding='utf-8') as f1, \
+            open(file2, 'r', newline='', encoding='utf-8') as f2, \
+            open(output_file, 'w', newline='', encoding='utf-8') as f_out:
+
+        reader1, reader2 = csv.DictReader(f1), csv.DictReader(f2)
+        writer = csv.writer(f_out)
+
+        # print("hi")
+        # print(file1, file2)
+        # print(reader1.fieldnames)
+        # print(output_file)
+
+        # writer.writerow(["hi","bye","mai"])
+
+        # Write header to the output file
+        # header1 = next(reader1, None)
+        writer.writerow(reader1.fieldnames)
+        # next(reader2)  # Skip header in second file
+
+        # Initialize rows
+        row1, row2 = next(reader1, None), next(reader2, None)
+
+        # print(row1, row2)
+        try:
+            while row1 is not None or row2 is not None:
+                print(row1, row2)
+                if row2 is None or (row1 is not None and float(row1[col]) < float(row2[col])):
+                    print("1 ", row1)
+                    writer.writerow(row1.values())
+                    row1 = next(reader1, None)
+                else:
+                    print("2 ", row2)
+                    writer.writerow(row2.values())
+                    row2 = next(reader2, None)
+        except:
+            while row1 is not None or row2 is not None:
+                print(row1, row2)
+                if row2 is None or (row1 is not None and row1[col] < row2[col]):
+                    print("1 ", row1)
+                    writer.writerow(row1.values())
+                    row1 = next(reader1, None)
+                else:
+                    print("2 ", row2)
+                    writer.writerow(row2.values())
+                    row2 = next(reader2, None)
+
+        print("done pass")
+
+
+def merge_sort_csv_files(file_list, output_filepath, order_by):
+    """
+    Merges multiple sorted CSV files into a single sorted CSV file,
+    by merging two files at a time.
+    """
+    j = 0
+
+    while len(file_list) > 1:
+        new_file_list = []
+        print("here")
+        for i in range(0, len(file_list), 2):
+            print(i)
+            if i + 1 < len(file_list):
+                output_file = f'temp_merged_{j}.csv'
+                merge_two_csv_files(file_list[i], file_list[i + 1], output_file, col=order_by[0])
+                new_file_list.append(output_file)
+                j += 1
+            else:
+                new_file_list.append(file_list[i])
+
+        file_list = new_file_list
+        print(file_list)
+
+    # Rename the last remaining file to the desired output file
+    os.rename(file_list[0], output_filepath)
+
+
+# Usage example
+# file_list = ['temp_1.csv', 'temp_2.csv', 'temp_3.csv']  # replace with your file paths
+# merge_sort_csv_files(file_list, 'merged_sorted_output.csv')
+
+def write_to_csv(chunk, filename, fields, order_by):
+    sorted_chunk = chunk
+
+    if order_by:
+        if order_by[0] in fields:
+            try:
+                sorted_chunk = sorted(chunk, key=lambda x: int(x[order_by[0]]))
+            except:
+                sorted_chunk = sorted(chunk, key=lambda x: x[order_by[0]])
+
     with open(filename, 'w', newline='') as file:
         writer = csv.writer(file)
-        for r in chunk:
+        writer.writerow(fields)
+        for r in sorted_chunk:
             writer.writerow(r.values())
 
 
